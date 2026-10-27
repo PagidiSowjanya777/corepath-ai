@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CorePath AI</title>
+  <meta name="theme-color" content="#0b5cff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="CorePath AI">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f4f6fb; color: #1b1f2a; }
+    header { background: #0b5cff; color: #fff; padding: 16px; text-align: center; font-size: 20px; font-weight: 600; }
+    main { max-width: 760px; margin: 0 auto; padding: 16px; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+    select, input[type=text], textarea { width: 100%; padding: 10px; border: 1px solid #cfd5e3; border-radius: 8px; font-size: 15px; font-family: inherit; }
+    textarea { min-height: 100px; resize: vertical; }
+    button.primary { width: 100%; margin-top: 14px; padding: 12px; background: #0b5cff; color: #fff; border: 0; border-radius: 8px; font-size: 16px; font-weight: 600; }
+    button.primary:disabled { opacity: .6; }
+    #answer { white-space: pre-wrap; line-height: 1.55; }
+    #error { color: #b00020; font-weight: 600; }
+    .followups button { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px 12px; background: #eef3ff; color: #0b3fa8; border: 1px solid #c9d8ff; border-radius: 8px; font-size: 14px; }
+    .note { font-size: 12px; color: #5b6475; margin-top: 12px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>CorePath AI</header>
+  <main>
+    <form id="askForm" class="card">
+      <label for="branch">Engineering branch</label>
+      <select id="branch" name="branch">
+        {% for b in branches %}
+        <option value="{{ b }}">{{ b }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="subject">Subject (optional)</label>
+      <input type="text" id="subject" name="subject" placeholder="e.g. Thermodynamics">
+
+      <label for="level">Level</label>
+      <select id="level" name="level">
+        <option>School</option>
+        <option selected>Undergraduate</option>
+        <option>Postgraduate</option>
+      </select>
+
+      <label for="question">Your question</label>
+      <textarea id="question" name="question" placeholder="Type your engineering question..."></textarea>
+
+      <label for="reference">Reference file (optional: PDF, TXT, MD)</label>
+      <input type="file" id="reference" name="reference" accept=".pdf,.txt,.md">
+
+      <button class="primary" id="askBtn" type="submit">Get answer</button>
+    </form>
+
+    <div id="result" class="card hidden">
+      <div id="error" class="hidden"></div>
+      <div id="answer"></div>
+      <div id="followWrap" class="followups hidden">
+        <label>Related questions you can ask next</label>
+        <div id="followList"></div>
+      </div>
+      <div id="sourceWrap" class="note hidden"></div>
+      <div id="note" class="note"></div>
+    </div>
+  </main>
+
+  <script>
+    // ---- Home screen app setup (no extra files needed) ----
+    function makeIcon(size) {
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const g = c.getContext("2d");
+      g.fillStyle = "#0b5cff";
+      g.fillRect(0, 0, size, size);
+      g.fillStyle = "#ffffff";
+      g.font = "bold " + Math.round(size * 0.42) + "px system-ui, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText("CP", size / 2, size / 2);
+      return c.toDataURL("image/png");
+    }
+
+    (function setupHomeScreen() {
+      try {
+        const icon192 = makeIcon(192);
+        const icon512 = makeIcon(512);
+
+        const touch = document.createElement("link");
+        touch.rel = "apple-touch-icon";
+        touch.href = makeIcon(180);
+        document.head.appendChild(touch);
+
+        const manifest = {
+          name: "CorePath AI",
+          short_name: "CorePath",
+          start_url: location.origin + "/",
+          scope: location.origin + "/",
+          display: "standalone",
+          background_color: "#ffffff",
+          theme_color: "#0b5cff",
+          icons: [
+            { src: icon192, sizes: "192x192", type: "image/png" },
+            { src: icon512, sizes: "512x512", type: "image/png" }
+          ]
+        };
+        const blob = new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" });
+        const link = document.createElement("link");
+        link.rel = "manifest";
+        link.href = URL.createObjectURL(blob);
+        document.head.appendChild(link);
+      } catch (e) { /* page still works without it */ }
+    })();
+
+    // ---- Ask + follow-up questions ----
+    const form = document.getElementById("askForm");
+    const btn = document.getElementById("askBtn");
+    const result = document.getElementById("result");
+    const errorBox = document.getElementById("error");
+    const answerBox = document.getElementById("answer");
+    const followWrap = document.getElementById("followWrap");
+    const followList = document.getElementById("followList");
+    const sourceWrap = document.getElementById("sourceWrap");
+    const noteBox = document.getElementById("note");
+    const questionBox = document.getElementById("question");
+
+    async function ask() {
+      btn.disabled = true;
+      btn.textContent = "Thinking...";
+      result.classList.remove("hidden");
+      errorBox.classList.add("hidden");
+      answerBox.textContent = "";
+      followWrap.classList.add("hidden");
+      sourceWrap.classList.add("hidden");
+      noteBox.textContent = "";
+
+      try {
+        const res = await fetch("/ask", { method: "POST", body: new FormData(form) });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          errorBox.textContent = data.error || "Something went wrong. Please try again.";
+          errorBox.classList.remove("hidden");
+          return;
+        }
+
+        answerBox.textContent = data.answer;
+        noteBox.textContent = data.note || "";
+
+        if (data.followups && data.followups.length) {
+          followList.innerHTML = "";
+          data.followups.forEach(q => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.textContent = q;
+            b.addEventListener("click", () => {
+              questionBox.value = q;
+              window.scrollTo({ top: 0, behavior: "smooth" });
+              ask();
+            });
+            followList.appendChild(b);
+          });
+          followWrap.classList.remove("hidden");
+        }
+
+        if (data.sources && data.sources.length) {
+          sourceWrap.innerHTML = "Sources: ";
+          data.sources.forEach((s, i) => {
+            const a = document.createElement("a");
+            a.href = s.url;
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.textContent = s.title;
+            sourceWrap.appendChild(a);
+            if (i < data.sources.length - 1) sourceWrap.appendChild(document.createTextNode(" | "));
+          });
+          sourceWrap.classList.remove("hidden");
+        }
+      } catch (e) {
+        errorBox.textContent = "Could not reach the server. Check your connection and try again.";
+        errorBox.classList.remove("hidden");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Get answer";
+      }
+    }
+
+    form.addEventListener("submit", e => { e.preventDefault(); ask(); });
+  </script>
+</body>
+</html>
