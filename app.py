@@ -9,7 +9,7 @@ from pypdf import PdfReader
 
 load_dotenv()
 
-app = Flask(__name__)
+app = Flask(__name__,template_folder=".")
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB upload limit
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
